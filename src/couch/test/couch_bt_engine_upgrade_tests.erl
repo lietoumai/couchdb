@@ -22,7 +22,8 @@ setup() ->
     DbFileNames = [
         "db_without_purge_req.couch",
         "db_with_1_purge_req.couch",
-        "db_with_2_purge_req.couch"
+        "db_with_2_purge_req.couch",
+        "db_with_1_purge_req_for_2_docs.couch"
     ],
     NewPaths = lists:map(fun(DbFileName) ->
         OldDbFilePath = filename:join([?FIXTURESDIR, DbFileName]),
@@ -52,7 +53,8 @@ upgrade_test_() ->
             [
                 t_upgrade_without_purge_req(),
                 t_upgrade_with_1_purge_req(),
-                t_upgrade_with_N_purge_req()
+                t_upgrade_with_N_purge_req(),
+                t_upgrade_with_1_purge_req_for_2_docs()
             ]
         }
     }.
@@ -70,7 +72,9 @@ t_upgrade_without_purge_req() ->
         end),
         ?assertEqual([], UpgradedPurged),
 
-        {ok, Rev} = save_doc(DbName, {[{<<"_id">>, <<"doc4">>}, {<<"v">>, 1}]}),
+        {ok, Rev} = save_doc(
+            DbName, {[{<<"_id">>, <<"doc4">>}, {<<"v">>, 1}]}
+        ),
         {ok, _} = save_doc(DbName, {[{<<"_id">>, <<"doc5">>}, {<<"v">>, 2}]}),
 
         couch_util:with_db(DbName, fun(Db) ->
@@ -106,7 +110,9 @@ t_upgrade_with_1_purge_req() ->
         end),
         ?assertEqual([{1, <<"doc1">>}], UpgradedPurged),
 
-        {ok, Rev} = save_doc(DbName, {[{<<"_id">>, <<"doc4">>}, {<<"v">>, 1}]}),
+        {ok, Rev} = save_doc(
+            DbName, {[{<<"_id">>, <<"doc4">>}, {<<"v">>, 1}]}
+        ),
         {ok, _} = save_doc(DbName, {[{<<"_id">>, <<"doc5">>}, {<<"v">>, 2}]}),
 
         couch_util:with_db(DbName, fun(Db) ->
@@ -162,6 +168,43 @@ t_upgrade_with_N_purge_req() ->
         couch_util:with_db(DbName, fun(Db) ->
             ?assertEqual({ok, 2}, couch_db:get_doc_count(Db)),
             ?assertEqual({ok, 3}, couch_db:get_purge_seq(Db))
+        end)
+    end).
+
+
+t_upgrade_with_1_purge_req_for_2_docs() ->
+    ?_test(begin
+        % There are two documents (Doc4 and Doc5) in the fixture database
+        % with three docs (Doc1, Doc2 and Doc3) that have been purged, and
+        % with one purge req for Doc1 and another purge req for Doc 2 and Doc3
+        DbName = <<"db_with_1_purge_req_for_2_docs">>,
+
+        {ok, UpgradedPurged} = couch_util:with_db(DbName, fun(Db) ->
+            ?assertEqual({ok, 3}, couch_db:get_purge_seq(Db)),
+            couch_db:fold_purge_infos(Db, 1, fun fold_fun/2, [])
+        end),
+        ?assertEqual([{3,<<"doc2">>},{2,<<"doc3">>}], UpgradedPurged),
+
+        {ok, Rev} = save_doc(DbName, {[{<<"_id">>, <<"doc6">>}, {<<"v">>, 1}]}),
+        {ok, _} = save_doc(DbName, {[{<<"_id">>, <<"doc7">>}, {<<"v">>, 2}]}),
+
+        couch_util:with_db(DbName, fun(Db) ->
+            ?assertEqual({ok, 4}, couch_db:get_doc_count(Db)),
+            ?assertEqual({ok, 3}, couch_db:get_purge_seq(Db))
+        end),
+
+        PurgeReqs = [
+            {couch_uuids:random(), <<"doc6">>, [Rev]}
+        ],
+
+        {ok, [{ok, PRevs}]} = couch_util:with_db(DbName, fun(Db) ->
+            couch_db:purge_docs(Db, PurgeReqs)
+        end),
+        ?assertEqual(PRevs, [Rev]),
+
+        couch_util:with_db(DbName, fun(Db) ->
+            ?assertEqual({ok, 3}, couch_db:get_doc_count(Db)),
+            ?assertEqual({ok, 4}, couch_db:get_purge_seq(Db))
         end)
     end).
 
