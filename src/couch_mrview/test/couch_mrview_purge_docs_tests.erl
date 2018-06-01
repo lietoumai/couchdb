@@ -42,6 +42,7 @@ view_purge_test_() ->
                     fun test_purge_partial/1,
                     fun test_purge_complete/1,
                     fun test_purge_nochange/1,
+                    fun test_purge_with_rewind_purgeseq/1,
                     fun test_purge_compact_size_check/1,
                     fun test_purge_compact_for_stale_purge_cp_without_client/1,
                     fun test_purge_compact_for_stale_purge_cp_with_client/1
@@ -195,6 +196,84 @@ test_purge_nochange(Db) ->
             {row, [{id, <<"5">>}, {key, 5}, {value, 5}]}
         ]},
         ?assertEqual(Expect2, Result2),
+
+        ok
+    end).
+
+
+test_purge_with_rewind_purgeseq(Db) ->
+    ?_test(begin
+        Result = run_query(Db, []),
+        Expect = {ok, [
+            {meta, [{total, 5}, {offset, 0}]},
+            {row, [{id, <<"1">>}, {key, 1}, {value, 1}]},
+            {row, [{id, <<"2">>}, {key, 2}, {value, 2}]},
+            {row, [{id, <<"3">>}, {key, 3}, {value, 3}]},
+            {row, [{id, <<"4">>}, {key, 4}, {value, 4}]},
+            {row, [{id, <<"5">>}, {key, 5}, {value, 5}]}
+        ]},
+        ?assertEqual(Expect, Result),
+        FDI = couch_db:get_full_doc_info(Db, <<"1">>),
+        Rev = get_rev(FDI),
+        {ok, [{ok, _PRevs}]} = couch_db:purge_docs(
+            Db,
+            [{<<"UUID1">>, <<"1">>, [Rev]}]
+        ),
+        {ok, Db2} = couch_db:reopen(Db),
+        Result2 = run_query(Db2, []),
+        Expect2 = {ok, [
+            {meta, [{total, 4}, {offset, 0}]},
+            {row, [{id, <<"2">>}, {key, 2}, {value, 2}]},
+            {row, [{id, <<"3">>}, {key, 3}, {value, 3}]},
+            {row, [{id, <<"4">>}, {key, 4}, {value, 4}]},
+            {row, [{id, <<"5">>}, {key, 5}, {value, 5}]}
+        ]},
+        ?assertEqual(Expect2, Result2),
+
+        FoldFun = fun(#doc{id = DocId, body = {_Props}}, DocIdsAcc) ->
+            {ok, [DocId | DocIdsAcc]}
+        end,
+        Opts = [
+            {start_key, list_to_binary(?LOCAL_DOC_PREFIX ++ "purge-")}
+        ],
+        {ok, LocalPDocIds} = couch_db:fold_local_docs(Db2, FoldFun, [], Opts),
+        [LocalPurgeDocId | _Rest] = LocalPDocIds,
+
+        {ok, Db3} = couch_db:reopen(Db2),
+        {ok, LocalPurgeDoc} = couch_db:open_doc(Db2, LocalPurgeDocId, []),
+        {Props} = couch_doc:to_json_obj(LocalPurgeDoc, []),
+        RewindPurgeDoc = couch_doc:from_json_obj({[
+            {<<"_id">>, LocalPurgeDocId},
+            {<<"_rev">>, couch_util:get_value(<<"_rev">>, Props)},
+            {<<"type">>, couch_util:get_value(<<"type">>, Props)},
+            {<<"updated_on">>, couch_util:get_value(<<"updated_on">>, Props)},
+            {<<"verify_module">>,
+                couch_util:get_value(<<"verify_module">>, Props)},
+            {<<"verify_function">>,
+                couch_util:get_value(<<"verify_function">>, Props)},
+            {<<"verify_options">>,
+                couch_util:get_value(<<"verify_options">>, Props)},
+            {<<"purge_seq">>, 0}
+        ]}),
+        {ok, _} = couch_db:update_doc(Db3, RewindPurgeDoc, []),
+
+        {ok, Db4} = couch_db:reopen(Db3),
+        FDI2 = couch_db:get_full_doc_info(Db, <<"2">>),
+        Rev2 = get_rev(FDI2),
+        {ok, [{ok, _PRevs2}]} = couch_db:purge_docs(
+            Db,
+            [{<<"UUID1">>, <<"2">>, [Rev2]}]
+        ),
+
+        {ok, Db5} = couch_db:reopen(Db4),
+        Result4 = run_query(Db5, []),
+        Expect4 = {ok, [
+            {meta, [{total, 3}, {offset, 0}]},
+            {row, [{id, <<"3">>}, {key, 3}, {value, 3}]},
+            {row, [{id, <<"4">>}, {key, 4}, {value, 4}]},
+            {row, [{id, <<"5">>}, {key, 5}, {value, 5}]}
+        ]},
+        ?assertEqual(Expect4, Result4),
 
         ok
     end).
